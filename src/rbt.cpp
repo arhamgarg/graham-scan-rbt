@@ -538,8 +538,35 @@ bool DynamicHull::valid() const {
 }
 
 std::vector<Point> DynamicHull::hull(bool include_collinear) const {
-  (void)include_collinear; // unused in Task 2
-  return {};
+  // Get ordered points (pivot is first)
+  std::vector<Point> points = ordered_points();
+
+  if (points.empty())
+    return {};
+  if (points.size() == 1)
+    return points;
+
+  // Graham's scan stack
+  std::vector<Point> result;
+  for (const auto &p : points) {
+    while (result.size() > 1) {
+      int turn = cross(result[result.size() - 2], result[result.size() - 1], p);
+      if (include_collinear) {
+        if (turn < 0)
+          result.pop_back();
+        else
+          break;
+      } else {
+        if (turn <= 0)
+          result.pop_back();
+        else
+          break;
+      }
+    }
+    result.push_back(p);
+  }
+
+  return result;
 }
 
 bool DynamicHull::erase(Point point) {
