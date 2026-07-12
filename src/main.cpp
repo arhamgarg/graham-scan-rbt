@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <numeric>
 #include <vector>
 
 #include "rbt.hpp"
