@@ -68,7 +68,6 @@ xcrun xctrace record --template Allocations --launch -- ./hull --benchmark
 - `src/rbt.hpp`: Public interface (Point, DynamicHull class, Color enum)
 - `src/rbt.cpp`: RBT implementation (rotations, rebalancing, insertion, deletion, validation)
 - `src/main.cpp`: Self-tests, baseline Graham scan, benchmark harness, allocation tracking
-- `docs/`: Design specs and implementation plan
 
 ## Performance Characteristics
 
