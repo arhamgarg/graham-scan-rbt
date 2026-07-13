@@ -480,6 +480,7 @@ bool DynamicHull::erase(Point point) {
     node_to_fix = successor->right;
 
     if (successor->parent == to_delete) {
+      node_to_fix->parent = successor;
     } else {
       transplant(root_, nil_, successor, successor->right);
       successor->right = to_delete->right;

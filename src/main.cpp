@@ -4,10 +4,15 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <numeric>
+#include <random>
+#include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "../include/rbt.hpp"
@@ -42,10 +47,10 @@ void operator delete(void *ptr, std::size_t) noexcept { std::free(ptr); }
 void operator delete[](void *ptr, std::size_t) noexcept { std::free(ptr); }
 
 struct BenchmarkReport {
-  std::vector<std::chrono::steady_clock::duration> samples;
-  std::size_t alloc_count = 0;
-  std::size_t alloc_bytes = 0;
-  bool hulls_match = false;
+  const char *name;
+  std::vector<double> samples;
+  double allocations_per_operation = 0.0;
+  double bytes_per_operation = 0.0;
 };
 
 struct Summary {
@@ -59,6 +64,63 @@ struct Summary {
   double p95;
   double p99;
 };
+
+struct BenchmarkConfig {
+  std::size_t dataset_size;
+  std::uint32_t seed;
+  std::size_t warmups;
+  std::size_t runs;
+  std::size_t fast_batch_size;
+};
+
+struct Dataset {
+  std::vector<Point> points;
+  std::vector<std::pair<long long, long long>> coordinates;
+  std::vector<Point> normal_inserts;
+  std::vector<Point> normal_deletes;
+  Point pivot;
+  Point pivot_insert;
+};
+
+Dataset generate_dataset(const BenchmarkConfig &config) {
+  std::mt19937 generator(config.seed);
+  std::set<std::pair<long long, long long>> seen;
+  Dataset dataset;
+  dataset.points.reserve(config.dataset_size);
+
+  while (dataset.points.size() < config.dataset_size) {
+    const Point point{static_cast<std::int32_t>(generator()),
+                      static_cast<std::int32_t>(generator())};
+    if (seen.emplace(point.x, point.y).second)
+      dataset.points.push_back(point);
+  }
+
+  dataset.coordinates.assign(seen.begin(), seen.end());
+  dataset.pivot = *std::min_element(
+      dataset.points.begin(), dataset.points.end(), [](Point a, Point b) {
+        return std::tie(a.y, a.x) < std::tie(b.y, b.x);
+      });
+  dataset.pivot_insert = {dataset.pivot.x, dataset.pivot.y - 1};
+  while (!seen.emplace(dataset.pivot_insert.x, dataset.pivot_insert.y).second)
+    --dataset.pivot_insert.y;
+
+  while (dataset.normal_inserts.size() < config.fast_batch_size) {
+    const Point point{static_cast<std::int32_t>(generator()),
+                      static_cast<std::int32_t>(generator())};
+    if (std::tie(point.y, point.x) >
+            std::tie(dataset.pivot.y, dataset.pivot.x) &&
+        seen.emplace(point.x, point.y).second)
+      dataset.normal_inserts.push_back(point);
+  }
+
+  for (const Point point : dataset.points) {
+    if (!(point == dataset.pivot))
+      dataset.normal_deletes.push_back(point);
+    if (dataset.normal_deletes.size() == config.fast_batch_size)
+      break;
+  }
+  return dataset;
+}
 
 double nearest_rank(const std::vector<double> &sorted, double percentile) {
   const auto rank = static_cast<std::size_t>(
@@ -165,175 +227,192 @@ std::vector<Point> baseline_hull(std::vector<Point> points,
   return hull;
 }
 
-BenchmarkReport benchmark_baseline(const std::vector<Point> &points,
-                                   int num_samples) {
-  BenchmarkReport report;
+volatile std::size_t g_benchmark_sink = 0;
 
-  for (int i = 0; i < num_samples; ++i) {
-    AllocationSnapshot before = capture_alloc();
-    auto start = std::chrono::steady_clock::now();
+void consume(std::size_t value) { g_benchmark_sink ^= value; }
 
-    auto hull = baseline_hull(points, false);
+std::unique_ptr<DynamicHull> make_tree(const std::vector<Point> &points) {
+  auto tree = std::make_unique<DynamicHull>();
+  for (const Point point : points)
+    tree->insert(point);
+  return tree;
+}
 
-    auto end = std::chrono::steady_clock::now();
-    AllocationSnapshot after = capture_alloc();
+template <typename Setup, typename Operation>
+BenchmarkReport measure(const char *name, const BenchmarkConfig &config,
+                        std::size_t operations_per_run, Setup setup,
+                        Operation operation) {
+  BenchmarkReport report{name, {}};
+  report.samples.reserve(config.runs);
 
-    report.samples.push_back(end - start);
-
-    if (i == num_samples - 1) {
-      AllocationSnapshot delta = delta_alloc(before, after);
-      report.alloc_count = delta.count;
-      report.alloc_bytes = delta.bytes;
-      report.hulls_match = true;
-    }
+  for (std::size_t run = 0; run < config.warmups; ++run) {
+    auto state = setup();
+    consume(operation(state));
   }
 
+  for (std::size_t run = 0; run < config.runs; ++run) {
+    auto state = setup();
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = operation(state);
+    const auto end = std::chrono::steady_clock::now();
+    report.samples.push_back(
+        std::chrono::duration<double, std::nano>(end - start).count() /
+        static_cast<double>(operations_per_run));
+    consume(result);
+  }
+
+  auto state = setup();
+  const auto before = capture_alloc();
+  consume(operation(state));
+  const auto allocation = delta_alloc(before, capture_alloc());
+  report.allocations_per_operation =
+      static_cast<double>(allocation.count) / operations_per_run;
+  report.bytes_per_operation =
+      static_cast<double>(allocation.bytes) / operations_per_run;
   return report;
 }
 
-BenchmarkReport benchmark_normal_insert(const std::vector<Point> &points,
-                                        const std::vector<Point> &candidates,
-                                        int num_samples) {
-  BenchmarkReport report;
+struct HullState {
+  std::unique_ptr<DynamicHull> tree;
+  std::vector<Point> hull;
+};
 
-  for (int i = 0; i < num_samples; ++i) {
-    DynamicHull tree;
-    for (const auto &p : points) {
-      tree.insert(p);
-    }
+struct BuildState {
+  const std::vector<Point> *points;
+  std::unique_ptr<DynamicHull> tree;
+  std::vector<Point> hull;
+};
 
-    AllocationSnapshot before = capture_alloc();
-    auto start = std::chrono::steady_clock::now();
+struct MutationState {
+  std::unique_ptr<DynamicHull> tree;
+  const std::vector<Point> *points;
+};
 
-    for (const auto &c : candidates) {
-      tree.insert(c);
-      tree.hull(false);
-    }
+std::vector<BenchmarkReport>
+run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
+  std::vector<BenchmarkReport> reports;
+  reports.reserve(7);
 
-    auto end = std::chrono::steady_clock::now();
-    AllocationSnapshot after = capture_alloc();
+  reports.push_back(measure(
+      "Batch Graham scan", config, 1,
+      [&] { return BuildState{&dataset.points, nullptr, {}}; },
+      [](BuildState &state) {
+        state.hull = baseline_hull(*state.points, false);
+        return state.hull.size();
+      }));
 
-    report.samples.push_back(end - start);
+  reports.push_back(measure(
+      "RBT build + hull", config, 1,
+      [&] { return BuildState{&dataset.points, nullptr, {}}; },
+      [](BuildState &state) {
+        state.tree = make_tree(*state.points);
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
 
-    if (i == num_samples - 1) {
-      AllocationSnapshot delta = delta_alloc(before, after);
-      report.alloc_count = delta.count;
-      report.alloc_bytes = delta.bytes;
+  reports.push_back(measure(
+      "RBT hull query", config, 1,
+      [&] { return HullState{make_tree(dataset.points), {}}; },
+      [](HullState &state) {
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
 
-      auto tree_hull = tree.hull(false);
-      auto base_hull = baseline_hull(
-          [&]() {
-            auto combined = points;
-            combined.insert(combined.end(), candidates.begin(),
-                            candidates.end());
-            return combined;
-          }(),
-          false);
-      report.hulls_match = (tree_hull == base_hull);
-    }
-  }
+  reports.push_back(measure(
+      "RBT normal insert", config, config.fast_batch_size,
+      [&] {
+        return MutationState{make_tree(dataset.points),
+                             &dataset.normal_inserts};
+      },
+      [](MutationState &state) {
+        for (const Point point : *state.points)
+          state.tree->insert(point);
+        return state.tree->size();
+      }));
 
-  return report;
-}
+  reports.push_back(measure(
+      "RBT normal delete", config, config.fast_batch_size,
+      [&] {
+        return MutationState{make_tree(dataset.points),
+                             &dataset.normal_deletes};
+      },
+      [](MutationState &state) {
+        for (const Point point : *state.points)
+          state.tree->erase(point);
+        return state.tree->size();
+      }));
 
-BenchmarkReport benchmark_normal_delete(const std::vector<Point> &points,
-                                        const std::vector<Point> &candidates,
-                                        int num_samples) {
-  BenchmarkReport report;
+  reports.push_back(measure(
+      "RBT pivot insert", config, 1,
+      [&] { return MutationState{make_tree(dataset.points), nullptr}; },
+      [&](MutationState &state) {
+        state.tree->insert(dataset.pivot_insert);
+        return state.tree->size();
+      }));
 
-  for (int i = 0; i < num_samples; ++i) {
-    DynamicHull tree;
-    auto combined = points;
-    combined.insert(combined.end(), candidates.begin(), candidates.end());
-    for (const auto &p : combined) {
-      tree.insert(p);
-    }
-
-    AllocationSnapshot before = capture_alloc();
-    auto start = std::chrono::steady_clock::now();
-
-    for (const auto &c : candidates) {
-      tree.erase(c);
-      tree.hull(false);
-    }
-
-    auto end = std::chrono::steady_clock::now();
-    AllocationSnapshot after = capture_alloc();
-
-    report.samples.push_back(end - start);
-
-    if (i == num_samples - 1) {
-      AllocationSnapshot delta = delta_alloc(before, after);
-      report.alloc_count = delta.count;
-      report.alloc_bytes = delta.bytes;
-
-      auto tree_hull = tree.hull(false);
-      auto base_hull = baseline_hull(points, false);
-      report.hulls_match = (tree_hull == base_hull);
-    }
-  }
-
-  return report;
-}
-
-BenchmarkReport benchmark_pivot_delete(const std::vector<Point> &points,
-                                       int num_samples) {
-  BenchmarkReport report;
-
-  for (int i = 0; i < num_samples; ++i) {
-    DynamicHull tree;
-    for (const auto &p : points) {
-      tree.insert(p);
-    }
-
-    auto ordered = tree.ordered_points();
-    Point pivot_to_delete = ordered[0];
-
-    AllocationSnapshot before = capture_alloc();
-    auto start = std::chrono::steady_clock::now();
-
-    tree.erase(pivot_to_delete);
-    tree.hull(false);
-
-    auto end = std::chrono::steady_clock::now();
-    AllocationSnapshot after = capture_alloc();
-
-    report.samples.push_back(end - start);
-
-    if (i == num_samples - 1) {
-      AllocationSnapshot delta = delta_alloc(before, after);
-      report.alloc_count = delta.count;
-      report.alloc_bytes = delta.bytes;
-
-      auto remaining = points;
-      remaining.erase(
-          std::remove(remaining.begin(), remaining.end(), pivot_to_delete),
-          remaining.end());
-      auto tree_hull = tree.hull(false);
-      auto base_hull = baseline_hull(remaining, false);
-      report.hulls_match = (tree_hull == base_hull);
-    }
-  }
-
-  return report;
-}
-
-void print_report(const char *label, BenchmarkReport report) {
-  std::sort(report.samples.begin(), report.samples.end());
-  const auto micros = [](auto duration) {
-    return std::chrono::duration_cast<std::chrono::microseconds>(duration)
-        .count();
-  };
-  printf("%-25s | %9lld | %11lld | %8lld  | %10s | %7zu | %5zu\n", label,
-         micros(report.samples.front()),
-         micros(report.samples[report.samples.size() / 2]),
-         micros(report.samples.back()), report.hulls_match ? "yes" : "no",
-         report.alloc_count, report.alloc_bytes);
+  reports.push_back(measure(
+      "RBT pivot delete", config, 1,
+      [&] { return MutationState{make_tree(dataset.points), nullptr}; },
+      [&](MutationState &state) {
+        state.tree->erase(dataset.pivot);
+        return state.tree->size();
+      }));
+  return reports;
 }
 
 void expect(bool condition, const char *message) {
   if (!condition)
     throw std::runtime_error(message);
+}
+
+void verify_workloads(const Dataset &dataset) {
+  const auto expected = baseline_hull(dataset.points, false);
+  auto tree = make_tree(dataset.points);
+  expect(tree->valid(), "RBT build invariants");
+  expect(tree->hull(false) == expected, "RBT build hull");
+
+  const auto original_size = tree->size();
+  for (const Point point : dataset.normal_inserts)
+    expect(tree->insert(point), "normal insert accepted");
+  auto inserted_points = dataset.points;
+  inserted_points.insert(inserted_points.end(), dataset.normal_inserts.begin(),
+                         dataset.normal_inserts.end());
+  expect(tree->size() == original_size + dataset.normal_inserts.size(),
+         "normal insert size");
+  expect(tree->valid(), "normal insert invariants");
+  expect(tree->hull(false) == baseline_hull(inserted_points, false),
+         "normal insert hull");
+
+  tree = make_tree(dataset.points);
+  for (const Point point : dataset.normal_deletes)
+    expect(tree->erase(point), "normal delete accepted");
+  auto remaining = dataset.points;
+  for (const Point point : dataset.normal_deletes)
+    remaining.erase(std::remove(remaining.begin(), remaining.end(), point),
+                    remaining.end());
+  expect(tree->size() == original_size - dataset.normal_deletes.size(),
+         "normal delete size");
+  expect(tree->valid(), "normal delete invariants");
+  expect(tree->hull(false) == baseline_hull(remaining, false),
+         "normal delete hull");
+
+  tree = make_tree(dataset.points);
+  expect(tree->insert(dataset.pivot_insert), "pivot insert accepted");
+  auto with_pivot_insert = dataset.points;
+  with_pivot_insert.push_back(dataset.pivot_insert);
+  expect(tree->valid(), "pivot insert invariants");
+  expect(tree->hull(false) == baseline_hull(with_pivot_insert, false),
+         "pivot insert hull");
+
+  tree = make_tree(dataset.points);
+  expect(tree->erase(dataset.pivot), "pivot delete accepted");
+  auto without_pivot = dataset.points;
+  without_pivot.erase(
+      std::remove(without_pivot.begin(), without_pivot.end(), dataset.pivot),
+      without_pivot.end());
+  expect(tree->valid(), "pivot delete invariants");
+  expect(tree->hull(false) == baseline_hull(without_pivot, false),
+         "pivot delete hull");
 }
 
 void test_statistics() {
@@ -348,6 +427,21 @@ void test_statistics() {
   expect(summary.p75 == 3.0, "statistics p75");
   expect(summary.p95 == 4.0, "statistics p95");
   expect(summary.p99 == 4.0, "statistics p99");
+}
+
+void test_benchmark_smoke() {
+  const BenchmarkConfig config{32, 0xC0FFEE, 0, 2, 4};
+  const auto dataset = generate_dataset(config);
+  expect(dataset.points.size() == 32, "benchmark dataset size");
+  expect(std::set<std::pair<long long, long long>>(
+             dataset.coordinates.begin(), dataset.coordinates.end())
+             .size() == 32,
+         "benchmark dataset uniqueness");
+  verify_workloads(dataset);
+  const auto reports = run_benchmarks(dataset, config);
+  expect(reports.size() == 7, "benchmark workload count");
+  for (const auto &report : reports)
+    expect(report.samples.size() == 2, "benchmark sample count");
 }
 
 int main(int argc, char *argv[]) {
@@ -366,6 +460,7 @@ int main(int argc, char *argv[]) {
 
   if (run_self_test) {
     test_statistics();
+    test_benchmark_smoke();
     DynamicHull tree;
     assert(tree.insert({0, 0}));
     assert(tree.insert({2, 0}));
@@ -406,53 +501,13 @@ int main(int argc, char *argv[]) {
     const auto base_hull_incl = baseline_hull(test_points, true);
     assert(tree_hull_incl == base_hull_incl);
 
-    const std::vector<Point> smoke_points{{0, 0}, {1, 0}, {2, 0}};
-    const std::vector<Point> smoke_candidates{{1, 1}, {0, 1}};
-    const auto report =
-        benchmark_normal_insert(smoke_points, smoke_candidates, 1);
-    assert(report.samples.size() == 1);
-    assert(report.hulls_match);
   }
 
   if (run_benchmark) {
-    std::vector<Point> points;
-    std::vector<Point> candidates;
-
-    for (int i = 0; i < 100; ++i) {
-      points.push_back({i, (i * 37 + 13) % 128});
-    }
-
-    for (int i = 0; i < 50; ++i) {
-      candidates.push_back({i * 2, (i * 61 + 29) % 256});
-    }
-
-    const int num_samples = 31;
-
-    printf("Scenario                  | Min (us)  | Median (us) | Max (us)  | "
-           "Hulls Match | Allocs | Bytes\n");
-    printf(
-        "--------------------------------------------------------------------"
-        "--------\n");
-
-    benchmark_baseline(points, 1);
-    print_report("Baseline (std::sort)",
-                 benchmark_baseline(points, num_samples));
-
-    benchmark_normal_insert(points, candidates, 1);
-    print_report("Normal insert + hull",
-                 benchmark_normal_insert(points, candidates, num_samples));
-
-    benchmark_normal_delete(points, candidates, 1);
-    print_report("Normal delete + hull",
-                 benchmark_normal_delete(points, candidates, num_samples));
-
-    benchmark_normal_insert(points, candidates, 1);
-    print_report("Pivot-changing insert",
-                 benchmark_normal_insert(points, candidates, num_samples));
-
-    benchmark_pivot_delete(points, 1);
-    print_report("Pivot deletion + rebuild",
-                 benchmark_pivot_delete(points, num_samples));
+    const BenchmarkConfig config{100, 0xC0FFEE, 1, 31, 50};
+    const auto dataset = generate_dataset(config);
+    verify_workloads(dataset);
+    (void)run_benchmarks(dataset, config);
   }
 
   return 0;
