@@ -3,8 +3,11 @@
 #endif
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
+#include <stdexcept>
 #include <vector>
 
 #include "../include/rbt.hpp"
@@ -44,6 +47,51 @@ struct BenchmarkReport {
   std::size_t alloc_bytes = 0;
   bool hulls_match = false;
 };
+
+struct Summary {
+  double total;
+  double mean;
+  double sd;
+  double min;
+  double median;
+  double max;
+  double p75;
+  double p95;
+  double p99;
+};
+
+double nearest_rank(const std::vector<double> &sorted, double percentile) {
+  const auto rank = static_cast<std::size_t>(
+      std::ceil(percentile * static_cast<double>(sorted.size())));
+  return sorted[std::max<std::size_t>(1, rank) - 1];
+}
+
+Summary summarize(std::vector<double> samples) {
+  std::sort(samples.begin(), samples.end());
+  const double total =
+      std::accumulate(samples.begin(), samples.end(), 0.0);
+  const double mean = total / static_cast<double>(samples.size());
+  double squared_deviation = 0.0;
+  for (const double sample : samples)
+    squared_deviation += (sample - mean) * (sample - mean);
+  const double median = samples.size() % 2 == 0
+                            ? (samples[samples.size() / 2 - 1] +
+                               samples[samples.size() / 2]) /
+                                  2.0
+                            : samples[samples.size() / 2];
+  return {total,
+          mean,
+          samples.size() > 1
+              ? std::sqrt(squared_deviation /
+                          static_cast<double>(samples.size() - 1))
+              : 0.0,
+          samples.front(),
+          median,
+          samples.back(),
+          nearest_rank(samples, 0.75),
+          nearest_rank(samples, 0.95),
+          nearest_rank(samples, 0.99)};
+}
 
 struct AllocationSnapshot {
   std::size_t count;
@@ -283,6 +331,25 @@ void print_report(const char *label, BenchmarkReport report) {
          report.alloc_count, report.alloc_bytes);
 }
 
+void expect(bool condition, const char *message) {
+  if (!condition)
+    throw std::runtime_error(message);
+}
+
+void test_statistics() {
+  const auto summary = summarize({1.0, 2.0, 3.0, 4.0});
+  expect(summary.total == 10.0, "statistics total");
+  expect(summary.mean == 2.5, "statistics mean");
+  expect(std::abs(summary.sd - std::sqrt(5.0 / 3.0)) < 1e-12,
+         "statistics sample standard deviation");
+  expect(summary.min == 1.0, "statistics minimum");
+  expect(summary.median == 2.5, "statistics median");
+  expect(summary.max == 4.0, "statistics maximum");
+  expect(summary.p75 == 3.0, "statistics p75");
+  expect(summary.p95 == 4.0, "statistics p95");
+  expect(summary.p99 == 4.0, "statistics p99");
+}
+
 int main(int argc, char *argv[]) {
   assert(cross({0, 0}, {1, 0}, {0, 1}) > 0);
   assert((Point{2, 3} == Point{2, 3}));
@@ -298,6 +365,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (run_self_test) {
+    test_statistics();
     DynamicHull tree;
     assert(tree.insert({0, 0}));
     assert(tree.insert({2, 0}));
