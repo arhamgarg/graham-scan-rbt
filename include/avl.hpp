@@ -1,58 +1,52 @@
 #pragma once
 
-#include <cstdint>
-#include <utility>
+#include <cstddef>
 #include <vector>
 
 struct Point {
-    int64_t x;
-    int64_t y;
+  long long x, y;
+  bool operator==(const Point &other) const {
+    return x == other.x && y == other.y;
+  }
 };
 
-bool operator==(const Point& lhs, const Point& rhs);
-bool operator!=(const Point& lhs, const Point& rhs);
+int cross(Point a, Point b, Point c);
+
+struct Node {
+  Point point;
+  long long dx, dy;
+  __int128 distance2;
+  int height;
+  Node *left;
+  Node *right;
+
+  Node(Point p, long long dx_val, long long dy_val)
+      : point(p), dx(dx_val), dy(dy_val),
+        distance2(static_cast<__int128>(dx_val) * dx_val +
+                  static_cast<__int128>(dy_val) * dy_val),
+        height(1), left(nullptr), right(nullptr) {}
+};
 
 class DynamicHull {
 public:
-    DynamicHull();
-    ~DynamicHull();
+  DynamicHull();
+  ~DynamicHull();
+  DynamicHull(const DynamicHull &) = delete;
+  DynamicHull &operator=(const DynamicHull &) = delete;
 
-    void insert(const Point& point);
-    void remove(const Point& point);
-    std::vector<Point> hull() const;
-    std::vector<Point> points() const;
-    std::size_t size() const;
-    bool empty() const;
-    void clear();
+  bool insert(Point point);
+  bool erase(Point point);
+  std::vector<Point> ordered_points() const;
+  std::vector<Point> hull(bool include_collinear = false) const;
+  bool valid() const;
+  std::size_t size() const;
 
 private:
-    struct Node {
-        explicit Node(Point value)
-            : point(std::move(value)), left(nullptr), right(nullptr), height(1) {}
+  Node *root_;
+  Point pivot_;
+  bool has_pivot_;
+  std::size_t size_;
 
-        Point point;
-        Node* left;
-        Node* right;
-        int height;
-    };
-
-    Node* root_;
-    Point pivot_;
-    std::vector<Point> points_;
-
-    static int height(Node* node);
-    static int balanceFactor(Node* node);
-    static __int128 cross(const Point& a, const Point& b, const Point& c);
-    static __int128 squaredDistance(const Point& a, const Point& b);
-
-    Node* rotateRight(Node* node);
-    Node* rotateLeft(Node* node);
-    Node* insertNode(Node* node, const Point& point);
-    Node* removeNode(Node* node, const Point& point, bool& removed);
-    Node* findMin(Node* node) const;
-    void updateHeight(Node* node);
-    bool lessByPolar(const Point& lhs, const Point& rhs) const;
-    void rebuildFrom(const std::vector<Point>& points);
-    std::vector<Point> inorder(Node* node) const;
-    void destroy(Node* node);
+  void clear();
+  void rebuild(std::vector<Point> points);
 };

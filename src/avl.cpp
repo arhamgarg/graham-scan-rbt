@@ -1,319 +1,373 @@
 #include "../include/avl.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <functional>
+
+int cross(Point a, Point b, Point c) {
+  const __int128 value =
+      (static_cast<__int128>(b.x) - a.x) * (static_cast<__int128>(c.y) - a.y) -
+      (static_cast<__int128>(b.y) - a.y) * (static_cast<__int128>(c.x) - a.x);
+  return (value > 0) - (value < 0);
+}
 
 namespace {
-struct PivotLess {
-    bool operator()(const Point& lhs, const Point& rhs) const {
-        return std::tie(lhs.y, lhs.x) < std::tie(rhs.y, rhs.x);
+
+bool compare_nodes(const Node *a, const Node *b) {
+  const bool a_upper = a->dy > 0 || (a->dy == 0 && a->dx >= 0);
+  const bool b_upper = b->dy > 0 || (b->dy == 0 && b->dx >= 0);
+
+  if (a_upper != b_upper)
+    return a_upper > b_upper;
+
+  const __int128 cross_prod = static_cast<__int128>(a->dx) * b->dy -
+                              static_cast<__int128>(a->dy) * b->dx;
+  if (cross_prod != 0)
+    return cross_prod > 0;
+
+  return a->distance2 < b->distance2;
+}
+
+int height(Node *n) {
+  return n ? n->height : 0;
+}
+
+int get_balance(Node *n) {
+  return n ? height(n->left) - height(n->right) : 0;
+}
+
+void update_height(Node *n) {
+  if (n) {
+    n->height = 1 + std::max(height(n->left), height(n->right));
+  }
+}
+
+Node *rotate_right(Node *y) {
+  Node *x = y->left;
+  Node *T2 = x->right;
+
+  x->right = y;
+  y->left = T2;
+
+  update_height(y);
+  update_height(x);
+
+  return x;
+}
+
+Node *rotate_left(Node *x) {
+  Node *y = x->right;
+  Node *T2 = y->left;
+
+  y->left = x;
+  x->right = T2;
+
+  update_height(x);
+  update_height(y);
+
+  return y;
+}
+
+Node *balance_node(Node *node) {
+  update_height(node);
+  int balance = get_balance(node);
+
+  // Left Left Case
+  if (balance > 1 && get_balance(node->left) >= 0)
+    return rotate_right(node);
+
+  // Left Right Case
+  if (balance > 1 && get_balance(node->left) < 0) {
+    node->left = rotate_left(node->left);
+    return rotate_right(node);
+  }
+
+  // Right Right Case
+  if (balance < -1 && get_balance(node->right) <= 0)
+    return rotate_left(node);
+
+  // Right Left Case
+  if (balance < -1 && get_balance(node->right) > 0) {
+    node->right = rotate_right(node->right);
+    return rotate_left(node);
+  }
+
+  return node;
+}
+
+Node *insert_helper(Node *node, Node *new_node, bool &success) {
+  if (!node) {
+    success = true;
+    return new_node;
+  }
+
+  if (new_node->point == node->point) {
+    success = false;
+    return node;
+  }
+
+  if (compare_nodes(new_node, node)) {
+    node->left = insert_helper(node->left, new_node, success);
+  } else {
+    node->right = insert_helper(node->right, new_node, success);
+  }
+
+  if (!success) return node;
+
+  return balance_node(node);
+}
+
+Node *find_min(Node *node) {
+  Node *curr = node;
+  while (curr && curr->left) {
+    curr = curr->left;
+  }
+  return curr;
+}
+
+Node *erase_helper(Node *node, Point point, long long dx, long long dy, __int128 distance2, bool &success) {
+  if (!node) {
+    success = false;
+    return nullptr;
+  }
+
+  if (point == node->point) {
+    success = true;
+    if (!node->left || !node->right) {
+      Node *temp = node->left ? node->left : node->right;
+      delete node;
+      return temp;
+    } else {
+      Node *temp = find_min(node->right);
+      node->point = temp->point;
+      node->dx = temp->dx;
+      node->dy = temp->dy;
+      node->distance2 = temp->distance2;
+      bool dummy_success = false;
+      node->right = erase_helper(node->right, temp->point, temp->dx, temp->dy, temp->distance2, dummy_success);
     }
-};
-}  // namespace
+  } else {
+    const bool curr_upper = node->dy > 0 || (node->dy == 0 && node->dx >= 0);
+    const bool p_upper = dy > 0 || (dy == 0 && dx >= 0);
 
-bool operator==(const Point& lhs, const Point& rhs) {
-    return lhs.x == rhs.x && lhs.y == rhs.y;
+    bool go_left = false;
+    if (curr_upper != p_upper) {
+      go_left = p_upper > curr_upper;
+    } else {
+      const __int128 cross_prod = static_cast<__int128>(dx) * node->dy -
+                                  static_cast<__int128>(dy) * node->dx;
+      if (cross_prod != 0) {
+        go_left = cross_prod > 0;
+      } else {
+        go_left = distance2 < node->distance2;
+      }
+    }
+
+    if (go_left) {
+      node->left = erase_helper(node->left, point, dx, dy, distance2, success);
+    } else {
+      node->right = erase_helper(node->right, point, dx, dy, distance2, success);
+    }
+  }
+
+  if (!node) return nullptr;
+
+  return balance_node(node);
 }
 
-bool operator!=(const Point& lhs, const Point& rhs) {
-    return !(lhs == rhs);
+bool validate_avl(const Node *node, int &computed_height) {
+  if (!node) {
+    computed_height = 0;
+    return true;
+  }
+  int left_height = 0, right_height = 0;
+  if (!validate_avl(node->left, left_height)) return false;
+  if (!validate_avl(node->right, right_height)) return false;
+
+  if (node->height != 1 + std::max(left_height, right_height)) return false;
+  if (std::abs(left_height - right_height) > 1) return false;
+
+  computed_height = node->height;
+  return true;
 }
 
-DynamicHull::DynamicHull() : root_(nullptr), pivot_{0, 0} {}
+bool validate_sorted_avl(const Node *node, const Node *&last) {
+  if (!node)
+    return true;
 
-DynamicHull::~DynamicHull() {
-    destroy(root_);
+  if (!validate_sorted_avl(node->left, last))
+    return false;
+
+  if (last && !compare_nodes(last, node)) {
+    return false;
+  }
+  last = node;
+
+  return validate_sorted_avl(node->right, last);
 }
+
+} // namespace
 
 void DynamicHull::clear() {
-    destroy(root_);
-    root_ = nullptr;
-    points_.clear();
-    pivot_ = {0, 0};
-}
-
-std::vector<Point> DynamicHull::points() const {
-    return points_;
-}
-
-std::size_t DynamicHull::size() const {
-    return points_.size();
-}
-
-bool DynamicHull::empty() const {
-    return points_.empty();
-}
-
-int DynamicHull::height(Node* node) {
-    return node ? node->height : 0;
-}
-
-int DynamicHull::balanceFactor(Node* node) {
-    return node ? height(node->left) - height(node->right) : 0;
-}
-
-__int128 DynamicHull::cross(const Point& a, const Point& b, const Point& c) {
-    return (__int128)(b.x - a.x) * (c.y - a.y) - (__int128)(b.y - a.y) * (c.x - a.x);
-}
-
-__int128 DynamicHull::squaredDistance(const Point& a, const Point& b) {
-    const auto dx = a.x - b.x;
-    const auto dy = a.y - b.y;
-    return (__int128)dx * dx + (__int128)dy * dy;
-}
-
-void DynamicHull::updateHeight(Node* node) {
-    if (!node) {
-        return;
-    }
-    node->height = 1 + std::max(height(node->left), height(node->right));
-}
-
-DynamicHull::Node* DynamicHull::rotateRight(Node* node) {
-    Node* left = node->left;
-    Node* leftRight = left->right;
-
-    left->right = node;
-    node->left = leftRight;
-
-    updateHeight(node);
-    updateHeight(left);
-    return left;
-}
-
-DynamicHull::Node* DynamicHull::rotateLeft(Node* node) {
-    Node* right = node->right;
-    Node* rightLeft = right->left;
-
-    right->left = node;
-    node->right = rightLeft;
-
-    updateHeight(node);
-    updateHeight(right);
-    return right;
-}
-
-bool DynamicHull::lessByPolar(const Point& lhs, const Point& rhs) const {
-    if (lhs == rhs) {
-        return false;
-    }
-
-    const Point leftRelative{lhs.x - pivot_.x, lhs.y - pivot_.y};
-    const Point rightRelative{rhs.x - pivot_.x, rhs.y - pivot_.y};
-
-    const bool leftUpper = leftRelative.y > 0 || (leftRelative.y == 0 && leftRelative.x > 0);
-    const bool rightUpper = rightRelative.y > 0 || (rightRelative.y == 0 && rightRelative.x > 0);
-
-    if (leftUpper != rightUpper) {
-        return leftUpper;
-    }
-
-    const auto orientation = cross({pivot_.x, pivot_.y}, lhs, rhs);
-    if (orientation != 0) {
-        return orientation > 0;
-    }
-
-    return squaredDistance(pivot_, lhs) < squaredDistance(pivot_, rhs);
-}
-
-DynamicHull::Node* DynamicHull::insertNode(Node* node, const Point& point) {
-    if (!node) {
-        return new Node(point);
-    }
-
-    if (lessByPolar(point, node->point)) {
-        node->left = insertNode(node->left, point);
-    } else if (lessByPolar(node->point, point)) {
-        node->right = insertNode(node->right, point);
-    } else {
-        return node;
-    }
-
-    updateHeight(node);
-    const int balance = balanceFactor(node);
-
-    if (balance > 1 && lessByPolar(point, node->left->point)) {
-        return rotateRight(node);
-    }
-    if (balance < -1 && lessByPolar(node->right->point, point)) {
-        return rotateLeft(node);
-    }
-    if (balance > 1) {
-        node->left = rotateLeft(node->left);
-        return rotateRight(node);
-    }
-    if (balance < -1) {
-        node->right = rotateRight(node->right);
-        return rotateLeft(node);
-    }
-
-    return node;
-}
-
-DynamicHull::Node* DynamicHull::removeNode(Node* node, const Point& point, bool& removed) {
-    if (!node) {
-        return nullptr;
-    }
-
-    if (lessByPolar(point, node->point)) {
-        node->left = removeNode(node->left, point, removed);
-    } else if (lessByPolar(node->point, point)) {
-        node->right = removeNode(node->right, point, removed);
-    } else {
-        removed = true;
-        if (!node->left || !node->right) {
-            Node* replacement = node->left ? node->left : node->right;
-            delete node;
-            return replacement;
-        }
-
-        Node* successor = findMin(node->right);
-        node->point = successor->point;
-        node->right = removeNode(node->right, successor->point, removed);
-    }
-
-    if (!removed) {
-        return node;
-    }
-
-    updateHeight(node);
-    const int balance = balanceFactor(node);
-
-    if (balance > 1) {
-        if (balanceFactor(node->left) >= 0) {
-            return rotateRight(node);
-        }
-        node->left = rotateLeft(node->left);
-        return rotateRight(node);
-    }
-    if (balance < -1) {
-        if (balanceFactor(node->right) <= 0) {
-            return rotateLeft(node);
-        }
-        node->right = rotateRight(node->right);
-        return rotateLeft(node);
-    }
-
-    return node;
-}
-
-DynamicHull::Node* DynamicHull::findMin(Node* node) const {
-    while (node && node->left) {
-        node = node->left;
-    }
-    return node;
-}
-
-void DynamicHull::rebuildFrom(const std::vector<Point>& points) {
-    destroy(root_);
-    root_ = nullptr;
-
-    if (points.empty()) {
-        pivot_ = {0, 0};
-        return;
-    }
-
-    pivot_ = *std::min_element(points.begin(), points.end(), PivotLess{});
-    for (const Point& point : points) {
-        if (point == pivot_) {
-            continue;
-        }
-        root_ = insertNode(root_, point);
-    }
-}
-
-std::vector<Point> DynamicHull::inorder(Node* node) const {
-    std::vector<Point> values;
-    if (!node) {
-        return values;
-    }
-
-    auto left = inorder(node->left);
-    values.insert(values.end(), left.begin(), left.end());
-    values.push_back(node->point);
-    auto right = inorder(node->right);
-    values.insert(values.end(), right.begin(), right.end());
-    return values;
-}
-
-void DynamicHull::destroy(Node* node) {
-    if (!node) {
-        return;
-    }
-    destroy(node->left);
-    destroy(node->right);
+  std::function<void(Node *)> delete_tree = [&](Node *node) {
+    if (!node)
+      return;
+    delete_tree(node->left);
+    delete_tree(node->right);
     delete node;
+  };
+  delete_tree(root_);
+  root_ = nullptr;
+  has_pivot_ = false;
+  size_ = 0;
 }
 
-void DynamicHull::insert(const Point& point) {
-    if (points_.empty()) {
-        points_.push_back(point);
-        pivot_ = point;
-        root_ = nullptr;
-        return;
-    }
+void DynamicHull::rebuild(std::vector<Point> points) {
+  clear();
+  if (points.empty())
+    return;
 
-    if (point == pivot_) {
-        return;
-    }
-
-    if (std::find(points_.begin(), points_.end(), point) != points_.end()) {
-        return;
-    }
-
-    points_.push_back(point);
-    root_ = insertNode(root_, point);
+  const auto pivot =
+      std::min_element(points.begin(), points.end(), [](Point a, Point b) {
+        return std::tie(a.y, a.x) < std::tie(b.y, b.x);
+      });
+  std::iter_swap(points.begin(), pivot);
+  for (const auto point : points) {
+    insert(point);
+  }
 }
 
-void DynamicHull::remove(const Point& point) {
-    if (points_.empty()) {
-        return;
-    }
+DynamicHull::DynamicHull()
+    : root_(nullptr), pivot_({0, 0}), has_pivot_(false), size_(0) {}
 
-    if (point == pivot_) {
-        auto it = std::find(points_.begin(), points_.end(), point);
-        if (it == points_.end()) {
-            return;
-        }
-
-        points_.erase(it);
-        if (points_.empty()) {
-            clear();
-            return;
-        }
-
-        rebuildFrom(points_);
-        return;
-    }
-
-    auto it = std::find(points_.begin(), points_.end(), point);
-    if (it == points_.end()) {
-        return;
-    }
-
-    points_.erase(it);
-    bool removed = false;
-    root_ = removeNode(root_, point, removed);
+DynamicHull::~DynamicHull() {
+  clear();
 }
 
-std::vector<Point> DynamicHull::hull() const {
-    std::vector<Point> ordered;
-    ordered.push_back(pivot_);
+bool DynamicHull::insert(Point point) {
+  if (!has_pivot_) {
+    pivot_ = point;
+    has_pivot_ = true;
+    size_ = 1;
+    return true;
+  }
 
-    const auto values = inorder(root_);
-    ordered.insert(ordered.end(), values.begin(), values.end());
+  if (std::tie(point.y, point.x) < std::tie(pivot_.y, pivot_.x)) {
+    std::vector<Point> all_points = ordered_points();
+    all_points.push_back(point);
+    rebuild(std::move(all_points));
+    return true;
+  }
 
-    if (ordered.size() < 3) {
-        return ordered;
-    }
+  if (point == pivot_)
+    return false;
 
-    std::vector<Point> stack;
-    stack.push_back(ordered.front());
-    for (std::size_t i = 1; i < ordered.size(); ++i) {
-        const Point& candidate = ordered[i];
-        while (stack.size() >= 2 && cross(stack[stack.size() - 2], stack.back(), candidate) <= 0) {
-            stack.pop_back();
-        }
-        stack.push_back(candidate);
-    }
-    return stack;
+  long long dx = point.x - pivot_.x;
+  long long dy = point.y - pivot_.y;
+
+  Node *new_node = new Node(point, dx, dy);
+  bool success = false;
+  root_ = insert_helper(root_, new_node, success);
+
+  if (success) {
+    ++size_;
+  } else {
+    delete new_node;
+  }
+  return success;
 }
+
+std::vector<Point> DynamicHull::ordered_points() const {
+  std::vector<Point> result;
+
+  if (has_pivot_) {
+    result.push_back(pivot_);
+  }
+
+  std::function<void(Node *)> inorder = [&](Node *node) {
+    if (!node)
+      return;
+    inorder(node->left);
+    result.push_back(node->point);
+    inorder(node->right);
+  };
+
+  inorder(root_);
+  return result;
+}
+
+bool DynamicHull::valid() const {
+  if (!has_pivot_)
+    return root_ == nullptr && size_ == 0;
+
+  if (root_ == nullptr)
+    return size_ == 1;
+
+  int computed_height = 0;
+  if (!validate_avl(root_, computed_height))
+    return false;
+
+  const Node *last = nullptr;
+  return validate_sorted_avl(root_, last);
+}
+
+std::vector<Point> DynamicHull::hull(bool include_collinear) const {
+  std::vector<Point> points = ordered_points();
+
+  if (points.empty())
+    return {};
+  if (points.size() == 1)
+    return points;
+
+  std::vector<Point> result;
+  for (const auto &p : points) {
+    while (result.size() > 1) {
+      int turn = cross(result[result.size() - 2], result[result.size() - 1], p);
+      if (include_collinear) {
+        if (turn < 0)
+          result.pop_back();
+        else
+          break;
+      } else {
+        if (turn <= 0)
+          result.pop_back();
+        else
+          break;
+      }
+    }
+    result.push_back(p);
+  }
+
+  return result;
+}
+
+bool DynamicHull::erase(Point point) {
+  if (point == pivot_) {
+    if (size_ == 1) {
+      has_pivot_ = false;
+      size_ = 0;
+      return true;
+    } else if (root_ == nullptr) {
+      return false;
+    } else {
+      auto points = ordered_points();
+      points.erase(points.begin());
+      rebuild(std::move(points));
+      return true;
+    }
+  }
+
+  long long dx = point.x - pivot_.x;
+  long long dy = point.y - pivot_.y;
+  __int128 distance2 =
+      static_cast<__int128>(dx) * dx + static_cast<__int128>(dy) * dy;
+
+  bool success = false;
+  root_ = erase_helper(root_, point, dx, dy, distance2, success);
+  if (success) {
+    --size_;
+  }
+  return success;
+}
+
+std::size_t DynamicHull::size() const { return size_; }
