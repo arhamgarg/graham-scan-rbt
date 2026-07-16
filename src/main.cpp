@@ -216,8 +216,7 @@ const char *compiler() {
 void print_reports(const std::vector<BenchmarkReport> &reports,
                    const BenchmarkConfig &config) {
   std::cout << "Dataset: " << config.dataset_size << " points\n"
-            << "Seed: 0x" << std::hex << std::uppercase << config.seed
-            << std::dec << std::nouppercase << '\n'
+            << "Seed: " << config.seed << '\n'
             << "Warm-ups: " << config.warmups << '\n'
             << "Measured samples: " << config.runs << '\n'
             << "Mutation batch: " << config.fast_batch_size
@@ -720,7 +719,7 @@ void test_report_output() {
   const auto text = output.str();
   expect(text.find("Dataset: 10000 points\n") != std::string::npos,
          "report dataset metadata");
-  expect(text.find("Seed: 0xC0FFEE\n") != std::string::npos,
+  expect(text.find("Seed: 12648430\n") != std::string::npos,
          "report seed metadata");
   expect(text.find("Warm-ups: 3\n") != std::string::npos,
          "report warm-up metadata");
