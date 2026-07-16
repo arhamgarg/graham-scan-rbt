@@ -19,9 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include "../include/arr.hpp"
 #include "../include/avl.hpp"
 #include "../include/rbt.hpp"
-#include "../include/arr.hpp"
 
 std::size_t g_alloc_count = 0;
 std::size_t g_alloc_bytes = 0;
@@ -106,9 +106,8 @@ Dataset generate_dataset(const BenchmarkConfig &config) {
   }
 
   dataset.pivot = *std::min_element(
-      dataset.points.begin(), dataset.points.end(), [](Point a, Point b) {
-        return std::tie(a.y, a.x) < std::tie(b.y, b.x);
-      });
+      dataset.points.begin(), dataset.points.end(),
+      [](Point a, Point b) { return std::tie(a.y, a.x) < std::tie(b.y, b.x); });
   dataset.pivot_insert = {dataset.pivot.x, dataset.pivot.y - 1};
   while (!seen.emplace(dataset.pivot_insert.x, dataset.pivot_insert.y).second)
     --dataset.pivot_insert.y;
@@ -139,17 +138,16 @@ double nearest_rank(const std::vector<double> &sorted, double percentile) {
 
 Summary summarize(std::vector<double> samples) {
   std::sort(samples.begin(), samples.end());
-  const double total =
-      std::accumulate(samples.begin(), samples.end(), 0.0);
+  const double total = std::accumulate(samples.begin(), samples.end(), 0.0);
   const double mean = total / static_cast<double>(samples.size());
   double squared_deviation = 0.0;
   for (const double sample : samples)
     squared_deviation += (sample - mean) * (sample - mean);
-  const double median = samples.size() % 2 == 0
-                            ? (samples[samples.size() / 2 - 1] +
-                               samples[samples.size() / 2]) /
-                                  2.0
-                            : samples[samples.size() / 2];
+  const double median =
+      samples.size() % 2 == 0
+          ? (samples[samples.size() / 2 - 1] + samples[samples.size() / 2]) /
+                2.0
+          : samples[samples.size() / 2];
   return {total,
           mean,
           samples.size() > 1
@@ -181,8 +179,8 @@ DurationUnit duration_unit(double nanoseconds) {
 
 std::string duration(double nanoseconds, DurationUnit unit) {
   std::ostringstream output;
-  output << std::fixed << std::setprecision(3)
-         << nanoseconds / unit.divisor << unit.suffix;
+  output << std::fixed << std::setprecision(3) << nanoseconds / unit.divisor
+         << unit.suffix;
   return output.str();
 }
 
@@ -231,14 +229,14 @@ void print_reports(const std::vector<BenchmarkReport> &reports) {
             << std::setw(7) << "runs" << std::setw(13) << "total"
             << std::setw(24) << "mean +- sd" << std::setw(13) << "min"
             << std::setw(13) << "median" << std::setw(13) << "max"
-            << std::setw(13) << "p75" << std::setw(13) << "p95"
-            << std::setw(13) << "p99" << '\n'
+            << std::setw(13) << "p75" << std::setw(13) << "p95" << std::setw(13)
+            << "p99" << '\n'
             << std::string(146, '-') << '\n';
   for (const auto &report : reports) {
     const auto summary = summarize(report.samples);
     const auto unit = duration_unit(summary.mean);
-    const auto mean_sd = duration(summary.mean, unit) + " +- " +
-                         duration(summary.sd, unit);
+    const auto mean_sd =
+        duration(summary.mean, unit) + " +- " + duration(summary.sd, unit);
     std::cout << std::left << std::setw(24) << report.name << std::right
               << std::setw(7) << report.samples.size() << std::setw(13)
               << duration(summary.total, unit) << std::setw(24) << mean_sd
@@ -250,9 +248,10 @@ void print_reports(const std::vector<BenchmarkReport> &reports) {
               << duration(summary.p99, unit) << '\n';
   }
 
-  std::cout << "\n" << std::left << std::setw(24) << "benchmark"
-            << std::right << std::setw(18) << "allocations/op"
-            << std::setw(18) << "bytes/op" << '\n'
+  std::cout << "\n"
+            << std::left << std::setw(24) << "benchmark" << std::right
+            << std::setw(18) << "allocations/op" << std::setw(18) << "bytes/op"
+            << '\n'
             << std::string(60, '-') << '\n';
   for (const auto &report : reports)
     std::cout << std::left << std::setw(24) << report.name << std::right
@@ -381,158 +380,43 @@ BenchmarkReport measure(const char *name, const BenchmarkConfig &config,
   return report;
 }
 
-template <typename HullType>
-struct HullState {
+template <typename HullType> struct HullState {
   std::unique_ptr<HullType> tree;
   std::vector<Point> hull;
 };
 
-template <typename HullType>
-struct BuildState {
+template <typename HullType> struct BuildState {
   const std::vector<Point> *points;
   std::unique_ptr<HullType> tree;
   std::vector<Point> hull;
 };
 
-template <typename HullType>
-struct MutationState {
+template <typename HullType> struct MutationState {
   std::unique_ptr<HullType> tree;
   const std::vector<Point> *points;
 };
 
-std::vector<BenchmarkReport>
-run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
+std::vector<BenchmarkReport> run_benchmarks(const Dataset &dataset,
+                                            const BenchmarkConfig &config) {
   std::vector<BenchmarkReport> reports;
   reports.reserve(19);
 
   reports.push_back(measure(
       "Batch Graham scan", config, 1,
-      [&] { return BuildState<avl::DynamicHull>{&dataset.points, nullptr, {}}; },
+      [&] {
+        return BuildState<avl::DynamicHull>{&dataset.points, nullptr, {}};
+      },
       [](BuildState<avl::DynamicHull> &state) {
         state.hull = baseline_hull(*state.points, false);
         return state.hull.size();
       }));
 
-  // RBT Benchmarks
-  reports.push_back(measure(
-      "RBT build + hull", config, 1,
-      [&] { return BuildState<rbt::DynamicHull>{&dataset.points, nullptr, {}}; },
-      [](BuildState<rbt::DynamicHull> &state) {
-        state.tree = make_tree<rbt::DynamicHull>(*state.points);
-        state.hull = state.tree->hull(false);
-        return state.hull.size();
-      }));
-
-  reports.push_back(measure(
-      "RBT hull query", config, 1,
-      [&] { return HullState<rbt::DynamicHull>{make_tree<rbt::DynamicHull>(dataset.points), {}}; },
-      [](HullState<rbt::DynamicHull> &state) {
-        state.hull = state.tree->hull(false);
-        return state.hull.size();
-      }));
-
-  reports.push_back(measure(
-      "RBT normal insert", config, config.fast_batch_size,
-      [&] {
-        return MutationState<rbt::DynamicHull>{make_tree<rbt::DynamicHull>(dataset.points),
-                                              &dataset.normal_inserts};
-      },
-      [](MutationState<rbt::DynamicHull> &state) {
-        for (const Point point : *state.points)
-          state.tree->insert(point);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "RBT normal delete", config, config.fast_batch_size,
-      [&] {
-        return MutationState<rbt::DynamicHull>{make_tree<rbt::DynamicHull>(dataset.points),
-                                              &dataset.normal_deletes};
-      },
-      [](MutationState<rbt::DynamicHull> &state) {
-        for (const Point point : *state.points)
-          state.tree->erase(point);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "RBT pivot insert", config, 1,
-      [&] { return MutationState<rbt::DynamicHull>{make_tree<rbt::DynamicHull>(dataset.points), nullptr}; },
-      [&](MutationState<rbt::DynamicHull> &state) {
-        state.tree->insert(dataset.pivot_insert);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "RBT pivot delete", config, 1,
-      [&] { return MutationState<rbt::DynamicHull>{make_tree<rbt::DynamicHull>(dataset.points), nullptr}; },
-      [&](MutationState<rbt::DynamicHull> &state) {
-        state.tree->erase(dataset.pivot);
-        return state.tree->size();
-      }));
-
-  // AVL Benchmarks
-  reports.push_back(measure(
-      "AVL build + hull", config, 1,
-      [&] { return BuildState<avl::DynamicHull>{&dataset.points, nullptr, {}}; },
-      [](BuildState<avl::DynamicHull> &state) {
-        state.tree = make_tree<avl::DynamicHull>(*state.points);
-        state.hull = state.tree->hull(false);
-        return state.hull.size();
-      }));
-
-  reports.push_back(measure(
-      "AVL hull query", config, 1,
-      [&] { return HullState<avl::DynamicHull>{make_tree<avl::DynamicHull>(dataset.points), {}}; },
-      [](HullState<avl::DynamicHull> &state) {
-        state.hull = state.tree->hull(false);
-        return state.hull.size();
-      }));
-
-  reports.push_back(measure(
-      "AVL normal insert", config, config.fast_batch_size,
-      [&] {
-        return MutationState<avl::DynamicHull>{make_tree<avl::DynamicHull>(dataset.points),
-                                              &dataset.normal_inserts};
-      },
-      [](MutationState<avl::DynamicHull> &state) {
-        for (const Point point : *state.points)
-          state.tree->insert(point);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "AVL normal delete", config, config.fast_batch_size,
-      [&] {
-        return MutationState<avl::DynamicHull>{make_tree<avl::DynamicHull>(dataset.points),
-                                              &dataset.normal_deletes};
-      },
-      [](MutationState<avl::DynamicHull> &state) {
-        for (const Point point : *state.points)
-          state.tree->erase(point);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "AVL pivot insert", config, 1,
-      [&] { return MutationState<avl::DynamicHull>{make_tree<avl::DynamicHull>(dataset.points), nullptr}; },
-      [&](MutationState<avl::DynamicHull> &state) {
-        state.tree->insert(dataset.pivot_insert);
-        return state.tree->size();
-      }));
-
-  reports.push_back(measure(
-      "AVL pivot delete", config, 1,
-      [&] { return MutationState<avl::DynamicHull>{make_tree<avl::DynamicHull>(dataset.points), nullptr}; },
-      [&](MutationState<avl::DynamicHull> &state) {
-        state.tree->erase(dataset.pivot);
-        return state.tree->size();
-      }));
-
   // Array Benchmarks
   reports.push_back(measure(
       "Array build + hull", config, 1,
-      [&] { return BuildState<arr::DynamicHull>{&dataset.points, nullptr, {}}; },
+      [&] {
+        return BuildState<arr::DynamicHull>{&dataset.points, nullptr, {}};
+      },
       [](BuildState<arr::DynamicHull> &state) {
         state.tree = make_tree<arr::DynamicHull>(*state.points);
         state.hull = state.tree->hull(false);
@@ -541,7 +425,10 @@ run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
 
   reports.push_back(measure(
       "Array hull query", config, 1,
-      [&] { return HullState<arr::DynamicHull>{make_tree<arr::DynamicHull>(dataset.points), {}}; },
+      [&] {
+        return HullState<arr::DynamicHull>{
+            make_tree<arr::DynamicHull>(dataset.points), {}};
+      },
       [](HullState<arr::DynamicHull> &state) {
         state.hull = state.tree->hull(false);
         return state.hull.size();
@@ -550,8 +437,9 @@ run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
   reports.push_back(measure(
       "Array normal insert", config, config.fast_batch_size,
       [&] {
-        return MutationState<arr::DynamicHull>{make_tree<arr::DynamicHull>(dataset.points),
-                                              &dataset.normal_inserts};
+        return MutationState<arr::DynamicHull>{
+            make_tree<arr::DynamicHull>(dataset.points),
+            &dataset.normal_inserts};
       },
       [](MutationState<arr::DynamicHull> &state) {
         for (const Point point : *state.points)
@@ -562,8 +450,9 @@ run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
   reports.push_back(measure(
       "Array normal delete", config, config.fast_batch_size,
       [&] {
-        return MutationState<arr::DynamicHull>{make_tree<arr::DynamicHull>(dataset.points),
-                                              &dataset.normal_deletes};
+        return MutationState<arr::DynamicHull>{
+            make_tree<arr::DynamicHull>(dataset.points),
+            &dataset.normal_deletes};
       },
       [](MutationState<arr::DynamicHull> &state) {
         for (const Point point : *state.points)
@@ -573,7 +462,10 @@ run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
 
   reports.push_back(measure(
       "Array pivot insert", config, 1,
-      [&] { return MutationState<arr::DynamicHull>{make_tree<arr::DynamicHull>(dataset.points), nullptr}; },
+      [&] {
+        return MutationState<arr::DynamicHull>{
+            make_tree<arr::DynamicHull>(dataset.points), nullptr};
+      },
       [&](MutationState<arr::DynamicHull> &state) {
         state.tree->insert(dataset.pivot_insert);
         return state.tree->size();
@@ -581,8 +473,153 @@ run_benchmarks(const Dataset &dataset, const BenchmarkConfig &config) {
 
   reports.push_back(measure(
       "Array pivot delete", config, 1,
-      [&] { return MutationState<arr::DynamicHull>{make_tree<arr::DynamicHull>(dataset.points), nullptr}; },
+      [&] {
+        return MutationState<arr::DynamicHull>{
+            make_tree<arr::DynamicHull>(dataset.points), nullptr};
+      },
       [&](MutationState<arr::DynamicHull> &state) {
+        state.tree->erase(dataset.pivot);
+        return state.tree->size();
+      }));
+
+  // AVL Benchmarks
+  reports.push_back(measure(
+      "AVL build + hull", config, 1,
+      [&] {
+        return BuildState<avl::DynamicHull>{&dataset.points, nullptr, {}};
+      },
+      [](BuildState<avl::DynamicHull> &state) {
+        state.tree = make_tree<avl::DynamicHull>(*state.points);
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
+
+  reports.push_back(measure(
+      "AVL hull query", config, 1,
+      [&] {
+        return HullState<avl::DynamicHull>{
+            make_tree<avl::DynamicHull>(dataset.points), {}};
+      },
+      [](HullState<avl::DynamicHull> &state) {
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
+
+  reports.push_back(measure(
+      "AVL normal insert", config, config.fast_batch_size,
+      [&] {
+        return MutationState<avl::DynamicHull>{
+            make_tree<avl::DynamicHull>(dataset.points),
+            &dataset.normal_inserts};
+      },
+      [](MutationState<avl::DynamicHull> &state) {
+        for (const Point point : *state.points)
+          state.tree->insert(point);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "AVL normal delete", config, config.fast_batch_size,
+      [&] {
+        return MutationState<avl::DynamicHull>{
+            make_tree<avl::DynamicHull>(dataset.points),
+            &dataset.normal_deletes};
+      },
+      [](MutationState<avl::DynamicHull> &state) {
+        for (const Point point : *state.points)
+          state.tree->erase(point);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "AVL pivot insert", config, 1,
+      [&] {
+        return MutationState<avl::DynamicHull>{
+            make_tree<avl::DynamicHull>(dataset.points), nullptr};
+      },
+      [&](MutationState<avl::DynamicHull> &state) {
+        state.tree->insert(dataset.pivot_insert);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "AVL pivot delete", config, 1,
+      [&] {
+        return MutationState<avl::DynamicHull>{
+            make_tree<avl::DynamicHull>(dataset.points), nullptr};
+      },
+      [&](MutationState<avl::DynamicHull> &state) {
+        state.tree->erase(dataset.pivot);
+        return state.tree->size();
+      }));
+
+  // RBT Benchmarks
+  reports.push_back(measure(
+      "RBT build + hull", config, 1,
+      [&] {
+        return BuildState<rbt::DynamicHull>{&dataset.points, nullptr, {}};
+      },
+      [](BuildState<rbt::DynamicHull> &state) {
+        state.tree = make_tree<rbt::DynamicHull>(*state.points);
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
+
+  reports.push_back(measure(
+      "RBT hull query", config, 1,
+      [&] {
+        return HullState<rbt::DynamicHull>{
+            make_tree<rbt::DynamicHull>(dataset.points), {}};
+      },
+      [](HullState<rbt::DynamicHull> &state) {
+        state.hull = state.tree->hull(false);
+        return state.hull.size();
+      }));
+
+  reports.push_back(measure(
+      "RBT normal insert", config, config.fast_batch_size,
+      [&] {
+        return MutationState<rbt::DynamicHull>{
+            make_tree<rbt::DynamicHull>(dataset.points),
+            &dataset.normal_inserts};
+      },
+      [](MutationState<rbt::DynamicHull> &state) {
+        for (const Point point : *state.points)
+          state.tree->insert(point);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "RBT normal delete", config, config.fast_batch_size,
+      [&] {
+        return MutationState<rbt::DynamicHull>{
+            make_tree<rbt::DynamicHull>(dataset.points),
+            &dataset.normal_deletes};
+      },
+      [](MutationState<rbt::DynamicHull> &state) {
+        for (const Point point : *state.points)
+          state.tree->erase(point);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "RBT pivot insert", config, 1,
+      [&] {
+        return MutationState<rbt::DynamicHull>{
+            make_tree<rbt::DynamicHull>(dataset.points), nullptr};
+      },
+      [&](MutationState<rbt::DynamicHull> &state) {
+        state.tree->insert(dataset.pivot_insert);
+        return state.tree->size();
+      }));
+
+  reports.push_back(measure(
+      "RBT pivot delete", config, 1,
+      [&] {
+        return MutationState<rbt::DynamicHull>{
+            make_tree<rbt::DynamicHull>(dataset.points), nullptr};
+      },
+      [&](MutationState<rbt::DynamicHull> &state) {
         state.tree->erase(dataset.pivot);
         return state.tree->size();
       }));
@@ -596,11 +633,12 @@ void expect(bool condition, const char *message) {
 }
 
 template <typename HullType>
-void verify_workloads_typed(const Dataset &dataset, const char* tree_name) {
+void verify_workloads_typed(const Dataset &dataset, const char *tree_name) {
   const auto expected = baseline_hull(dataset.points, false);
   auto tree = make_tree<HullType>(dataset.points);
   expect(tree->valid(), (std::string(tree_name) + " build invariants").c_str());
-  expect(tree->hull(false) == expected, (std::string(tree_name) + " build hull").c_str());
+  expect(tree->hull(false) == expected,
+         (std::string(tree_name) + " build hull").c_str());
 
   const auto original_size = tree->size();
   for (const Point point : dataset.normal_inserts)
@@ -643,8 +681,8 @@ void verify_workloads_typed(const Dataset &dataset, const char* tree_name) {
   with_pivot_insert.push_back(dataset.pivot_insert);
   const auto ordered_after_pivot_insert = tree->ordered_points();
   expect(std::find(ordered_after_pivot_insert.begin(),
-                   ordered_after_pivot_insert.end(), dataset.pivot_insert) !=
-             ordered_after_pivot_insert.end(),
+                   ordered_after_pivot_insert.end(),
+                   dataset.pivot_insert) != ordered_after_pivot_insert.end(),
          "pivot insert present");
   expect(tree->valid(), "pivot insert invariants");
   expect(tree->hull(false) == baseline_hull(with_pivot_insert, false),
@@ -658,8 +696,8 @@ void verify_workloads_typed(const Dataset &dataset, const char* tree_name) {
       without_pivot.end());
   const auto ordered_after_pivot_delete = tree->ordered_points();
   expect(std::find(ordered_after_pivot_delete.begin(),
-                   ordered_after_pivot_delete.end(), dataset.pivot) ==
-             ordered_after_pivot_delete.end(),
+                   ordered_after_pivot_delete.end(),
+                   dataset.pivot) == ordered_after_pivot_delete.end(),
          "pivot delete absent");
   expect(tree->valid(), "pivot delete invariants");
   expect(tree->hull(false) == baseline_hull(without_pivot, false),
