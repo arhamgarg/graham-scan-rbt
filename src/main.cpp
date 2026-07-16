@@ -63,13 +63,9 @@ struct BenchmarkReport {
 };
 
 struct Summary {
-  double total;
   double mean;
   double sd;
-  double min;
-  double median;
-  double max;
-  double p75;
+  double p50;
   double p95;
 };
 
@@ -135,26 +131,23 @@ double nearest_rank(const std::vector<double> &sorted, double percentile) {
 
 Summary summarize(std::vector<double> samples) {
   std::sort(samples.begin(), samples.end());
-  const double total = std::accumulate(samples.begin(), samples.end(), 0.0);
-  const double mean = total / static_cast<double>(samples.size());
+  const double mean =
+      std::accumulate(samples.begin(), samples.end(), 0.0) /
+      static_cast<double>(samples.size());
   double squared_deviation = 0.0;
   for (const double sample : samples)
     squared_deviation += (sample - mean) * (sample - mean);
-  const double median =
+  const double p50 =
       samples.size() % 2 == 0
           ? (samples[samples.size() / 2 - 1] + samples[samples.size() / 2]) /
                 2.0
           : samples[samples.size() / 2];
-  return {total,
-          mean,
+  return {mean,
           samples.size() > 1
               ? std::sqrt(squared_deviation /
                           static_cast<double>(samples.size() - 1))
               : 0.0,
-          samples.front(),
-          median,
-          samples.back(),
-          nearest_rank(samples, 0.75),
+          p50,
           nearest_rank(samples, 0.95)};
 }
 
@@ -180,38 +173,78 @@ std::string duration(double nanoseconds, DurationUnit unit) {
   return output.str();
 }
 
-void print_reports(const std::vector<BenchmarkReport> &reports) {
-  std::cout << std::left << std::setw(24) << "benchmark" << std::right
-            << std::setw(7) << "runs" << std::setw(13) << "total"
-            << std::setw(24) << "mean +- sd" << std::setw(13) << "min"
-            << std::setw(13) << "median" << std::setw(13) << "max"
-            << std::setw(13) << "p75" << std::setw(13) << "p95" << '\n'
-            << std::string(133, '-') << '\n';
+const char *operating_system() {
+#if defined(__APPLE__)
+  return "macOS";
+#elif defined(__linux__)
+  return "Linux";
+#elif defined(_WIN32)
+  return "Windows";
+#else
+  return "unknown";
+#endif
+}
+
+const char *architecture() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+  return "x86_64";
+#else
+  return "unknown";
+#endif
+}
+
+const char *optimization_mode() {
+#ifdef __OPTIMIZE__
+  return "enabled";
+#else
+  return "disabled";
+#endif
+}
+
+const char *compiler() {
+#if defined(__clang__)
+  return "Clang " __clang_version__;
+#elif defined(__GNUC__)
+  return "GCC " __VERSION__;
+#else
+  return "unknown";
+#endif
+}
+
+void print_reports(const std::vector<BenchmarkReport> &reports,
+                   const BenchmarkConfig &config) {
+  std::cout << "Dataset: " << config.dataset_size << " points\n"
+            << "Seed: 0x" << std::hex << std::uppercase << config.seed
+            << std::dec << std::nouppercase << '\n'
+            << "Warm-ups: " << config.warmups << '\n'
+            << "Measured samples: " << config.runs << '\n'
+            << "Mutation batch: " << config.fast_batch_size
+            << " operations/sample\n"
+            << "Compiler: " << compiler() << '\n'
+            << "Optimization: " << optimization_mode() << '\n'
+            << "Platform: " << operating_system() << ' ' << architecture()
+            << "\n\n"
+            << std::left << std::setw(24) << "benchmark" << std::right
+            << std::setw(13) << "p50/op" << std::setw(13) << "p95/op"
+            << std::setw(24) << "mean +- sd" << std::setw(18)
+            << "allocations/op" << std::setw(22) << "allocated bytes/op"
+            << '\n'
+            << std::string(114, '-') << '\n';
+
   for (const auto &report : reports) {
     const auto summary = summarize(report.samples);
     const auto unit = duration_unit(summary.mean);
     const auto mean_sd =
         duration(summary.mean, unit) + " +- " + duration(summary.sd, unit);
     std::cout << std::left << std::setw(24) << report.name << std::right
-              << std::setw(7) << report.samples.size() << std::setw(13)
-              << duration(summary.total, unit) << std::setw(24) << mean_sd
-              << std::setw(13) << duration(summary.min, unit) << std::setw(13)
-              << duration(summary.median, unit) << std::setw(13)
-              << duration(summary.max, unit) << std::setw(13)
-              << duration(summary.p75, unit) << std::setw(13)
-              << duration(summary.p95, unit) << '\n';
-  }
-
-  std::cout << "\n"
-            << std::left << std::setw(24) << "benchmark" << std::right
-            << std::setw(18) << "allocations/op" << std::setw(18) << "bytes/op"
-            << '\n'
-            << std::string(60, '-') << '\n';
-  for (const auto &report : reports)
-    std::cout << std::left << std::setw(24) << report.name << std::right
-              << std::fixed << std::setprecision(0) << std::setw(18)
-              << report.allocations_per_operation << std::setw(18)
+              << std::setw(13) << duration(summary.p50, unit) << std::setw(13)
+              << duration(summary.p95, unit) << std::setw(24) << mean_sd
+              << std::fixed << std::setprecision(3) << std::setw(18)
+              << report.allocations_per_operation << std::setw(22)
               << report.bytes_per_operation << '\n';
+  }
 }
 
 struct AllocationSnapshot {
@@ -666,14 +699,10 @@ void verify_workloads(const Dataset &dataset) {
 
 void test_statistics() {
   const auto summary = summarize({1.0, 2.0, 3.0, 4.0});
-  expect(summary.total == 10.0, "statistics total");
   expect(summary.mean == 2.5, "statistics mean");
   expect(std::abs(summary.sd - std::sqrt(5.0 / 3.0)) < 1e-12,
          "statistics sample standard deviation");
-  expect(summary.min == 1.0, "statistics minimum");
-  expect(summary.median == 2.5, "statistics median");
-  expect(summary.max == 4.0, "statistics maximum");
-  expect(summary.p75 == 3.0, "statistics p75");
+  expect(summary.p50 == 2.5, "statistics p50");
   expect(summary.p95 == 4.0, "statistics p95");
 }
 
@@ -681,19 +710,34 @@ void test_report_output() {
   BenchmarkReport report{"test", {1.0, 2.0}};
   report.allocations_per_operation = 1.25;
   report.bytes_per_operation = 2.75;
+  const BenchmarkConfig config{10000, 0xC0FFEE, 3, 101, 256};
 
   std::ostringstream output;
   auto *original = std::cout.rdbuf(output.rdbuf());
-  print_reports({report});
+  print_reports({report}, config);
   std::cout.rdbuf(original);
 
   const auto text = output.str();
-  const auto header_end = text.find('\n');
-  expect(header_end == 133 && text.compare(header_end - 3, 3, "p95") == 0,
-         "report latency columns");
-  expect(text.find(std::string(17, ' ') + "1" + std::string(17, ' ') + "3\n") !=
+  expect(text.find("Dataset: 10000 points\n") != std::string::npos,
+         "report dataset metadata");
+  expect(text.find("Seed: 0xC0FFEE\n") != std::string::npos,
+         "report seed metadata");
+  expect(text.find("Warm-ups: 3\n") != std::string::npos,
+         "report warm-up metadata");
+  expect(text.find("Measured samples: 101\n") != std::string::npos,
+         "report sample metadata");
+  expect(text.find("Mutation batch: 256 operations/sample\n") !=
              std::string::npos,
-         "report memory metrics are whole numbers");
+         "report mutation batch metadata");
+  expect(text.find("p50/op") != std::string::npos &&
+             text.find("p95/op") != std::string::npos &&
+             text.find("mean +- sd") != std::string::npos &&
+             text.find("allocations/op") != std::string::npos &&
+             text.find("allocated bytes/op") != std::string::npos,
+         "report columns");
+  expect(text.find("1.250") != std::string::npos &&
+             text.find("2.750") != std::string::npos,
+         "report fractional allocation metrics");
 }
 
 void test_allocation_tracking() {
@@ -885,10 +929,10 @@ int main(int argc, char *argv[]) {
   }
 
   if (run_benchmark) {
-    const BenchmarkConfig config{100000, 0xC0FFEE, 3, 101, 4096};
+    const BenchmarkConfig config{10000, 0xC0FFEE, 3, 101, 256};
     const auto dataset = generate_dataset(config);
     verify_workloads(dataset);
-    print_reports(run_benchmarks(dataset, config));
+    print_reports(run_benchmarks(dataset, config), config);
   }
 
   return 0;
